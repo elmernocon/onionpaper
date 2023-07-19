@@ -7,7 +7,7 @@ import click
 import humanfriendly
 import yaml
 
-from .core import Point
+from .ctypes import Action, Config, logger
 from .core import trace as trace_internal
 
 datetime_format: str = "%Y-%m-%dT%H:%M:%S"
@@ -19,15 +19,17 @@ stop_at_default: Optional[str] = "no:1"
 @click.command()
 @click.argument("input", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option("--stop-at", default=stop_at_default)
-@click.option("--verbose", is_flag=True)
 def trace(
     input: Path,
     stop_at: str = stop_at_default,
-    verbose: bool = False,
 ) -> None:
     text = input.read_text()
     obj = yaml.safe_load(text)
-    points = [Point.create_from_dict(o) for o in obj]
+
+    config = obj.get("config", None)
+    config = Config.create_from_dict(config) if config else None
+    actions = obj.get("actions", [])
+    actions = [Action.create_from_dict(action) for action in actions]
 
     stop_type, stop_target = stop_at.split(":", maxsplit=1)
 
@@ -66,21 +68,20 @@ def trace(
     time_start = time.time()
 
     while True:
-        trace_internal(points=points)
+        trace_internal(actions=actions, config=config)
 
         counter += 1
         now = datetime.now()
-        time_up = int(time.time() - time_start)
+        time_up = time.time() - time_start
         time_up_str = humanfriendly.format_timespan(time_up)
 
-        if verbose:
-            print(
-                "[{}] no: {} | uptime: {}".format(
-                    now.strftime(datetime_format),
-                    str(counter).rjust(4, "0"),
-                    time_up_str,
-                )
+        logger.info(
+            "[{}] no: {} | uptime: {}".format(
+                now.strftime(datetime_format),
+                str(counter).rjust(4, "0"),
+                time_up_str,
             )
+        )
 
         if stop_type == "no" and counter >= stop_target:
             break

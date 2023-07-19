@@ -1,4 +1,5 @@
-click
-humanfriendly
-PyAutoGUI
-PyYAML
+click~=8.1.5
+humanfriendly~=10.0
+PyAutoGUI~=0.9.54
+pytweening~=1.0.7
+PyYAML~=6.0.1

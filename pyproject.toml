@@ -11,6 +11,7 @@ dependencies = [
     "click",
     "humanfriendly",
     "PyAutoGUI",
+    "pytweening",
     "PyYAML"
 ]
 license = {file = "LICENSE"}
