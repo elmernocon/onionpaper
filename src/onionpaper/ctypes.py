@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from string import ascii_lowercase, digits
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import pyautogui
 import pytweening
@@ -55,14 +55,107 @@ class Config:
         return Config(**dikt)
 
 
+class ComparisonType(StrEnum):
+    IsEqualTo = "=="
+    IsNotEqualTo = "!="
+    GreaterThan = ">"
+    GreaterThanOrIsEqualTo = ">="
+    LessThan = "<"
+    LessThanOrIsEqualTo = "<="
+
+
+@dataclass
+class Condition:
+    comparison: ComparisonType = ComparisonType.IsEqualTo
+    a: Any = None
+    b: Any = None
+    a_id: Optional[str] = None
+    b_id: Optional[str] = None
+
+    def evaluate(self, state: State) -> bool:
+        left = state.store.get(self.a_id, "") if self.a_id else self.a
+        right = state.store.get(self.b_id, "") if self.b_id else self.b
+        if self.comparison == ComparisonType.IsEqualTo:
+            e_value = left == right
+        elif self.comparison == ComparisonType.IsNotEqualTo:
+            e_value = left != right
+        elif self.comparison == ComparisonType.GreaterThan:
+            e_value = left > right
+        elif self.comparison == ComparisonType.GreaterThanOrIsEqualTo:
+            e_value = left >= right
+        elif self.comparison == ComparisonType.LessThan:
+            e_value = left < right
+        elif self.comparison == ComparisonType.LessThanOrIsEqualTo:
+            e_value = left <= right
+        else:
+            e_value = False
+
+        logger.debug(
+            "| ({}: {}) {} ({}: {}) = {}".format(
+                self.a_id if self.a_id else "a",
+                left,
+                self.comparison,
+                self.b_id if self.b_id else "b",
+                right,
+                e_value,
+            )
+        )
+
+        return e_value
+
+    @staticmethod
+    def create_from_dict(dikt: Dict[str, Any]) -> Condition:
+        return Condition(**dikt)
+
+
+@dataclass
+class State:
+    actions: List[Action]
+    config: Config
+    counter: int = 0
+    cycle: int = 0
+    index: int = 0
+    store: Dict[str, Any] = field(default_factory=lambda: {})
+
+    def is_done(self) -> bool:
+        return self.index >= len(self.actions)
+
+    def next(self) -> None:
+        action = self.actions[self.index]
+
+        prev_index = self.index
+        next_index = action.execute(state=self)
+
+        self.counter += 1
+
+        if self.index == len(self.actions) - 1:
+            self.cycle += 1
+
+        if next_index is None:
+            self.index += 1
+        else:
+            self.index = next_index
+
+        self.store["counter"] = self.counter
+        self.store["cycle"] = self.cycle
+        self.store["index"] = self.index
+        self.store["previous_index"] = prev_index
+
+    @staticmethod
+    def create_from_dict(dikt: Dict[str, Any]) -> State:
+        return State(**dikt)
+
+
 class ActionType(StrEnum):
     Click = "click"
     Configure = "configure"
     Drag = "drag"
     Hotkey = "hotkey"
+    Jump = "jump"
     Move = "move"
     Press = "press"
     Stop = "stop"
+    Store = "store"
     Write = "write"
 
 
@@ -74,60 +167,74 @@ class Action:
     duration: float = 0.0
     button: str = "left"
     key: str = "return"
+    index: Optional[int] = None
+    condition: Optional[Union[dict, Condition]] = None
     randomize: Optional[str] = None
     text: Optional[str] = None
+    id: Optional[str] = None
+    value: Any = None
 
     loglevel: Optional[str] = None
     relative: Optional[bool] = None
     tween: Optional[str] = None
 
-    def execute(self, config: Config) -> None:
-        loglevel = self.loglevel if self.loglevel else config.loglevel
-        relative = self.relative if self.relative is not None else config.relative
-        tween = self.tween if self.tween else config.tween
+    def execute(self, state: State) -> Optional[int]:
+        loglevel = self.loglevel if self.loglevel else state.config.loglevel
+        relative = self.relative if self.relative is not None else state.config.relative
+        tween = self.tween if self.tween else state.config.tween
 
-        self.randomize_parts(relative=relative)
+        self.randomize_parts(relative=relative, state=state)
 
         self.set_loglevel(loglevel=loglevel)
 
-        if self.type == ActionType.Click:
-            self.execute_click()
-        if self.type == ActionType.Configure:
-            self.execute_configure(config=config)
-        elif self.type == ActionType.Drag:
-            self.execute_drag(relative=relative, tween=tween)
-        elif self.type == ActionType.Move:
-            self.execute_move(relative=relative, tween=tween)
-        elif self.type == ActionType.Hotkey:
-            self.execute_hotkey()
-        elif self.type == ActionType.Press:
-            self.execute_press()
-        elif self.type == ActionType.Stop:
-            self.execute_stop()
-        elif self.type == ActionType.Write:
-            self.execute_write()
+        result = None
 
-    def execute_click(self) -> None:
+        if self.type == ActionType.Click:
+            result = self.execute_click()
+        if self.type == ActionType.Configure:
+            result = self.execute_configure(state=state)
+        elif self.type == ActionType.Drag:
+            result = self.execute_drag(relative=relative, tween=tween)
+        elif self.type == ActionType.Hotkey:
+            result = self.execute_hotkey()
+        elif self.type == ActionType.Jump:
+            result = self.execute_jump(state=state)
+        elif self.type == ActionType.Move:
+            result = self.execute_move(relative=relative, tween=tween)
+        elif self.type == ActionType.Press:
+            result = self.execute_press()
+        elif self.type == ActionType.Stop:
+            result = self.execute_stop()
+        elif self.type == ActionType.Store:
+            result = self.execute_store(state=state)
+        elif self.type == ActionType.Write:
+            result = self.execute_write()
+
+        return result
+
+    def execute_click(self) -> Optional[int]:
         pyautogui.mouseDown(button=self.button)
         logger.debug(f"| mouseDown(button={self.button})")
         time.sleep(self.duration)
         pyautogui.mouseUp(button=self.button)
         logger.debug(f"| mouseUp(button={self.button})")
         logger.info("* click")
+        return None
 
-    def execute_configure(self, config: Config) -> None:
+    def execute_configure(self, state: State) -> Optional[int]:
         if self.loglevel:
-            config.loglevel = self.loglevel
+            state.config.loglevel = self.loglevel
             logger.debug(f"| loglevel = {self.loglevel}")
         if self.relative is not None:
-            config.relative = self.relative
+            state.config.relative = self.relative
             logger.debug(f"| relative = {self.relative}")
         if self.tween:
-            config.tween = self.tween
+            state.config.tween = self.tween
             logger.debug(f"| tween = {self.tween}")
         logger.info("* configure")
+        return None
 
-    def execute_drag(self, relative: bool, tween: str) -> None:
+    def execute_drag(self, relative: bool, tween: str) -> Optional[int]:
         if relative:
             pyautogui.dragRel(
                 xOffset=self.x,
@@ -161,15 +268,27 @@ class Action:
                 f"button={self.button})"
             )
         logger.info("* drag")
+        return None
 
-    def execute_hotkey(self) -> None:
+    def execute_hotkey(self) -> Optional[int]:
         hotkeys = [hk.strip() for hk in self.key.split("+")]
         interval: float = self.duration / len(hotkeys)
         logger.debug(f"| hotkey({', '.join(hotkeys)}, interval={interval})")
         pyautogui.hotkey(*hotkeys, interval=interval)
         logger.info("* hotkey")
+        return None
 
-    def execute_move(self, relative: bool, tween: str) -> None:
+    def execute_jump(self, state: State) -> Optional[int]:
+        if self.condition and isinstance(self.condition, Condition):
+            e_value = self.condition.evaluate(state=state)
+            if not e_value:
+                logger.info("* jump (skipped)")
+                return None
+        logger.debug(f"| jump({self.index})")
+        logger.info("* jump")
+        return self.index
+
+    def execute_move(self, relative: bool, tween: str) -> Optional[int]:
         if relative:
             pyautogui.moveRel(
                 xOffset=self.x,
@@ -199,30 +318,41 @@ class Action:
                 f"tween={tween})"
             )
         logger.info("* move")
+        return None
 
-    def execute_press(self) -> None:
+    def execute_press(self) -> Optional[int]:
         pyautogui.keyDown(key=self.key)
         logger.debug(f"| keyDown(key={self.key})")
         time.sleep(self.duration)
         pyautogui.keyUp(key=self.key)
         logger.debug(f"| keyUp(key={self.key})")
         logger.info("* press")
+        return None
 
-    def execute_stop(self) -> None:
-        logger.debug(f"| stop()")
+    def execute_store(self, state: State) -> Optional[int]:
+        identifier = self.id if self.id else ""
+        logger.debug(f"| store({identifier}={self.value})")
+        state.store[identifier] = self.value
+        logger.info("* store")
+        return None
+
+    def execute_stop(self) -> Optional[int]:
+        logger.debug(f"| stop({self.duration})")
         time.sleep(self.duration)
         logger.debug(f"| resume()")
         logger.info("* stop")
+        return None
 
-    def execute_write(self) -> None:
+    def execute_write(self) -> Optional[int]:
         interval: float = self.duration / len(self.text)
         logger.debug(
             f"| write('{truncate_text(sanitize_text(self.text), limit=25)}...', interval={interval})"
         )
         pyautogui.write(message=self.text, interval=interval)
         logger.info("* write")
+        return None
 
-    def randomize_parts(self, relative: bool) -> None:
+    def randomize_parts(self, relative: bool, state: State) -> None:
         if self.randomize:
             randomize_parts = self.randomize.split(",")
             for part in randomize_parts:
@@ -242,6 +372,9 @@ class Action:
                 elif part == "key":
                     self.key = random.choice(alphanumeric_keys)
                     logger.debug(f"| key = random(<{self.key}>)")
+                elif part == "index":
+                    self.index = random.randint(0, len(state.actions) - 1)
+                    logger.debug(f"| index = random(<{self.index}>)")
 
     # noinspection PyMethodMayBeStatic
     def set_loglevel(self, loglevel: str) -> None:
@@ -249,7 +382,10 @@ class Action:
 
     @staticmethod
     def create_from_dict(dikt: Dict[str, Any]) -> Action:
-        return Action(**dikt)
+        action = Action(**dikt)
+        if action.condition and isinstance(action.condition, dict):
+            action.condition = Condition.create_from_dict(action.condition)
+        return action
 
     # noinspection PyShadowingBuiltins
     @staticmethod
@@ -282,5 +418,6 @@ __all__ = [
     "Action",
     "ActionType",
     "Config",
+    "State",
     "logger",
 ]
